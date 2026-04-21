@@ -134,11 +134,26 @@ int index_status(const Index *index) {
 //   - hex_to_hash                      : converting the parsed string to ObjectID
 //
 // Returns 0 on success, -1 on error.
+static int compare_index_paths(const void *a, const void *b) {
+    return strcmp(((IndexEntry *)a)->path, ((IndexEntry *)b)->path);
+}
 int index_load(Index *index) {
-    // TODO: Implement index loading
-    // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
+    index->count = 0;
+    FILE *f = fopen(INDEX_FILE, "r");
+    if (!f) return 0; // New repo, no index yet: success
+
+    char line[1024];
+    while (fgets(line, sizeof(line), f) && index->count < MAX_INDEX_ENTRIES) {
+        IndexEntry *e = &index->entries[index->count];
+        char hash_hex[HASH_HEX_SIZE + 1];
+        if (sscanf(line, "%o %64s %lu %u %511[^\n]", 
+                   &e->mode, hash_hex, &e->mtime_sec, &e->size, e->path) == 5) {
+            hex_to_hash(hash_hex, &e->hash);
+            index->count++;
+        }
+    }
+    fclose(f);
+    return 0;
 }
 
 // Save the index to .pes/index atomically.
@@ -152,10 +167,19 @@ int index_load(Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_save(const Index *index) {
-    // TODO: Implement atomic index saving
-    // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
+    char temp_path[512];
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", INDEX_FILE);
+    FILE *f = fopen(temp_path, "w");
+    if (!f) return -1;
+
+    for (int i = 0; i < index->count; i++) {
+        IndexEntry *e = &index->entries[i];
+        char hash_hex[HASH_HEX_SIZE + 1];
+        hash_to_hex(&e->hash, hash_hex);
+        fprintf(f, "%o %s %lu %u %s\n", e->mode, hash_hex, e->mtime_sec, e->size, e->path);
+    }
+    fclose(f);
+    return rename(temp_path, INDEX_FILE);
 }
 
 // Stage a file for the next commit.
@@ -168,8 +192,31 @@ int index_save(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_add(Index *index, const char *path) {
-    // TODO: Implement file staging
-    // (See Lab Appendix for logical steps)
-    (void)index; (void)path;
-    return -1;
+struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+    
+    // Read and write blob
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    void *data = malloc(st.st_size);
+    fread(data, 1, st.st_size, f);
+    fclose(f);
+
+    ObjectID blob_id;
+    if (object_write(OBJ_BLOB, data, st.st_size, &blob_id) < 0) {
+        free(data); return -1;
+    }
+    free(data);
+
+    // Update index entry
+    IndexEntry *e = index_find(index, path);
+    if (!e) {
+        e = &index->entries[index->count++];
+        strcpy(e->path, path);
+    }
+    e->mode = st.st_mode;
+    e->hash = blob_id;
+    e->mtime_sec = (uint64_t)st.st_mtime;
+    e->size = (uint32_t)st.st_size;
+    return index_save(index);
 }
